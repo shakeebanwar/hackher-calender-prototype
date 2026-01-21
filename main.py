@@ -30,14 +30,12 @@ class CycleHistoryCalculator:
                 gap = (history_data[i+1]['start'] - history_data[i]['start']).days
                 cycle_gaps.append(gap)
         
-        # Bleed Logic (Round Down)
         if len(bleed_durations) == 1:
             final_bleed_avg = bleed_durations[0]
         else:
             avg_raw = sum(bleed_durations) / len(bleed_durations)
             final_bleed_avg = math.floor(avg_raw)
 
-        # Cycle Logic (Round Up)
         if not cycle_gaps:
             final_cycle_avg = 28
         else:
@@ -76,7 +74,7 @@ class OvulationPredictor:
 
         # 4. Math Formulas & Timeline Calculation
         constants_sum = self.CRASH_1 + self.NURTURE + self.CRASH_2
-        power_week = cycle - (bleed + constants_sum)
+        power_week_duration = cycle - (bleed + constants_sum)
         
         # --- Timeline Generation Logic ---
         timeline = []
@@ -85,44 +83,63 @@ class OvulationPredictor:
         # Phase 1: Bleed
         bleed_end = current_date + timedelta(days=bleed - 1)
         timeline.append({"Phase": "🩸 Bleed Days", "Start": current_date, "End": bleed_end, "Days": bleed, "Color": "#ffcccc"})
-        current_date = bleed_end + timedelta(days=1)
-
-        # Phase 2: Power Week
-        pw_end = current_date + timedelta(days=power_week - 1)
-        timeline.append({"Phase": "⚡ Power Week", "Start": current_date, "End": pw_end, "Days": power_week, "Color": "#ffffcc"})
-        current_date = pw_end + timedelta(days=1)
-
-        # Phase 3: Crash 1
-        c1_end = current_date + timedelta(days=self.CRASH_1 - 1)
-        timeline.append({"Phase": "📉 Crash #1", "Start": current_date, "End": c1_end, "Days": self.CRASH_1, "Color": "#e6e6e6"})
-        current_date = c1_end + timedelta(days=1)
-
-        # Phase 4: Nurture
-        nur_end = current_date + timedelta(days=self.NURTURE - 1)
-        timeline.append({"Phase": "🌱 Nurture", "Start": current_date, "End": nur_end, "Days": self.NURTURE, "Color": "#ccffcc"})
-        current_date = nur_end + timedelta(days=1)
-
-        # Phase 5: Crash 2
-        c2_end = current_date + timedelta(days=self.CRASH_2 - 1)
-        timeline.append({"Phase": "📉 Crash #2", "Start": current_date, "End": c2_end, "Days": self.CRASH_2, "Color": "#e6e6e6"})
-
-        # --- Fertile Window Calculation ---
-        main_ovulation_day_num = (bleed + power_week) - 2
-        main_date = start_date_obj + timedelta(days=main_ovulation_day_num - 1)
         
-        baby_days = []
-        for i in range(4, 0, -1):
-            baby_days.append(main_date - timedelta(days=i))
-        baby_days.append(main_date)
-        baby_days.append(main_date + timedelta(days=1))
+        # Phase 2: Power Week
+        pw_start = bleed_end + timedelta(days=1)
+        pw_end = pw_start + timedelta(days=power_week_duration - 1)
+        timeline.append({"Phase": "⚡ Power Week", "Start": pw_start, "End": pw_end, "Days": power_week_duration, "Color": "#ffffcc"})
+        
+        # Phase 3: Crash 1
+        c1_start = pw_end + timedelta(days=1)
+        c1_end = c1_start + timedelta(days=self.CRASH_1 - 1)
+        timeline.append({"Phase": "📉 Crash #1", "Start": c1_start, "End": c1_end, "Days": self.CRASH_1, "Color": "#e6e6e6"})
+        
+        # Phase 4: Nurture
+        nur_start = c1_end + timedelta(days=1)
+        nur_end = nur_start + timedelta(days=self.NURTURE - 1)
+        timeline.append({"Phase": "🌱 Nurture", "Start": nur_start, "End": nur_end, "Days": self.NURTURE, "Color": "#ccffcc"})
+        
+        # Phase 5: Crash 2
+        c2_start = nur_end + timedelta(days=1)
+        c2_end = c2_start + timedelta(days=self.CRASH_2 - 1)
+        timeline.append({"Phase": "📉 Crash #2", "Start": c2_start, "End": c2_end, "Days": self.CRASH_2, "Color": "#e6e6e6"})
+
+        # --- Fertile Window Calculation (HYBRID LOGIC) ---
+        
+        # 1. Calculate Main Ovulation Day (Always needed for highlighting)
+        main_ovulation_day_num = (bleed + power_week_duration) - 2
+        main_date = start_date_obj + timedelta(days=main_ovulation_day_num - 1)
+
+        final_baby_days = []
+        logic_used = ""
+
+        # LOGIC CHECK:
+        # If Power Week is tight (5 days or less), make the WHOLE Power Week fertile.
+        if power_week_duration <= 5:
+            logic_used = "Power Week Rule (≤ 5 Days)"
+            # Add every day of the Power Week
+            for i in range(power_week_duration):
+                final_baby_days.append(pw_start + timedelta(days=i))
+        else:
+            logic_used = "Standard Rule (Main - 4 & + 1)"
+            # Use Standard Formula: Main - 4 to Main + 1
+            raw_baby_days = []
+            for i in range(4, 0, -1):
+                raw_baby_days.append(main_date - timedelta(days=i))
+            raw_baby_days.append(main_date)
+            raw_baby_days.append(main_date + timedelta(days=1))
+            
+            # Filter out overlap with bleed (only for Standard Rule)
+            final_baby_days = [d for d in raw_baby_days if d > bleed_end]
 
         return {
             "rounded_bleed": bleed,
             "rounded_cycle": cycle,
-            "power_week": power_week,
+            "power_week": power_week_duration,
             "main_date": main_date,
-            "baby_days": baby_days,
-            "timeline": timeline
+            "baby_days": final_baby_days,
+            "timeline": timeline,
+            "logic_used": logic_used
         }
 
 # ==========================================
@@ -131,7 +148,6 @@ class OvulationPredictor:
 
 st.set_page_config(page_title="Cycle Algorithms", page_icon="🩸", layout="wide")
 
-# --- SIDEBAR MENU ---
 st.sidebar.title("Navigation")
 app_mode = st.sidebar.radio("Choose Algorithm:", ["Algo #01: History Calculation", "Algo #02: Future Prediction"])
 st.sidebar.divider()
@@ -204,11 +220,11 @@ elif app_mode == "Algo #02: Future Prediction":
 
     c1, c2, c3 = st.columns(3)
     with c1:
-        p_start = st.date_input("Cycle Start Date (Day 1)", value=date.today())
+        p_start = st.date_input("Cycle Start Date (Day 1)", value=date(2026, 1, 1))
     with c2:
         p_bleed = st.number_input("Bleed Duration", min_value=0.0, max_value=15.0, value=5.0, step=0.1)
     with c3:
-        p_cycle = st.number_input("Cycle Duration", min_value=0.0, max_value=50.0, value=28.0, step=0.1)
+        p_cycle = st.number_input("Cycle Duration", min_value=0.0, max_value=50.0, value=21.0, step=0.1)
 
     if st.button("Generate Cycle Roadmap", type="primary"):
         algo2 = OvulationPredictor()
@@ -223,10 +239,9 @@ elif app_mode == "Algo #02: Future Prediction":
             k2.info(f"**Power Week:** {res['power_week']} Days")
             k3.info(f"**Total Cycle:** {res['rounded_cycle']} Days")
 
-            # --- SECTION 2: FULL TIMELINE (NEW) ---
+            # --- SECTION 2: FULL TIMELINE ---
             st.subheader("2. 📅 Full Cycle Timeline")
             
-            # Prepare data for display
             timeline_data = []
             for item in res['timeline']:
                 timeline_data.append({
@@ -236,24 +251,33 @@ elif app_mode == "Algo #02: Future Prediction":
                     "Duration": f"{item['Days']} Days"
                 })
             
-            # Show as a styled Table
             df_timeline = pd.DataFrame(timeline_data)
             st.table(df_timeline)
 
             # --- SECTION 3: FERTILE WINDOW ---
             st.subheader("3. ❤️ Fertile Window (Baby Days)")
             
-            cols = st.columns(6)
-            baby_dates_fmt = [d.strftime("%d %b") for d in res['baby_days']]
+            # Display logic used for clarity
+            st.caption(f"**Applied Logic:** {res['logic_used']}")
             
-            for i, date_str in enumerate(baby_dates_fmt):
-                with cols[i]:
-                    if i == 4: # Main Day
-                        st.error(f"{date_str}\n(Main)")
-                    else:
-                        st.success(f"{date_str}")
-            
-            st.caption("Note: Main Ovulation Day is highlighted in RED.")
+            if len(res['baby_days']) == 0:
+                 st.warning("All calculated fertile days overlap with Bleed days.")
+            else:
+                cols = st.columns(len(res['baby_days']))
+                
+                for i, day_obj in enumerate(res['baby_days']):
+                    date_str = day_obj.strftime("%d %b")
+                    is_main = (day_obj == res['main_date'])
+                    
+                    if i < len(cols):
+                        with cols[i]:
+                            if is_main:
+                                st.error(f"**{date_str}**\n\n(Main)")
+                            else:
+                                st.success(f"{date_str}")
+                
+                if res['logic_used'].startswith("Standard"):
+                    st.caption("Note: Any fertile days overlapping with Bleed days have been hidden.")
 
         except ValueError as e:
             st.error(f"❌ **VALIDATION FAILED:** {str(e)}")
