@@ -1,6 +1,7 @@
 import streamlit as st
 import math
 import pandas as pd
+import json
 from datetime import datetime, timedelta, date
 
 # ==========================================
@@ -45,21 +46,19 @@ class CycleHistoryCalculator:
                 gap = (history_data[i+1]['start'] - history_data[i]['start']).days
                 cycle_gaps.append(gap)
         
-        # --- BLEED AVERAGE (UPDATED TO CLIENT LOGIC) ---
+        # Bleed Average (Client Logic)
         if len(bleed_durations) == 1:
             final_bleed_avg = bleed_durations[0]
         else:
             avg_raw = sum(bleed_durations) / len(bleed_durations)
-            # Old: final_bleed_avg = math.floor(avg_raw)
-            # New: Custom Logic (0.6 up, 0.5 down)
             final_bleed_avg = apply_custom_rounding(avg_raw)
 
-        # --- CYCLE AVERAGE (KEPT STRICT ROUND UP AS PER ORIGINAL REQ) ---
+        # Cycle Average (Strict Round Up)
         if not cycle_gaps:
             final_cycle_avg = 28
         else:
             avg_cycle_raw = sum(cycle_gaps) / len(cycle_gaps)
-            final_cycle_avg = math.ceil(avg_cycle_raw) # Cycles always round up
+            final_cycle_avg = math.ceil(avg_cycle_raw)
 
         return {
             "bleed_avg": final_bleed_avg,
@@ -76,11 +75,7 @@ class OvulationPredictor:
 
     def predict(self, start_date_obj: date, raw_bleed: float, raw_cycle: float):
         # 1. Rounding Inputs
-        
-        # Bleed: Apply Client Logic (e.g. 5.7 -> 6, 5.2 -> 5)
         bleed = apply_custom_rounding(raw_bleed)
-        
-        # Cycle: Strict Round Up (e.g. 26.2 -> 27)
         cycle = math.ceil(raw_cycle)
 
         # 2. Basic Validation
@@ -95,49 +90,49 @@ class OvulationPredictor:
         if bleed > max_allowed:
             raise ValueError(f"For a {cycle}-day cycle, max bleed is {max_allowed}. You have {bleed}.")
 
-        # 4. Math Formulas & Timeline Calculation
+        # 4. Timeline Calculation
         constants_sum = self.CRASH_1 + self.NURTURE + self.CRASH_2
         power_week_duration = cycle - (bleed + constants_sum)
         
-        # --- Timeline Generation Logic ---
         timeline = []
         current_date = start_date_obj
 
         # Phase 1: Bleed
+        bleed_start = current_date
         bleed_end = current_date + timedelta(days=bleed - 1)
-        timeline.append({"Phase": "🩸 Bleed Days", "Start": current_date, "End": bleed_end, "Days": bleed, "Color": "#ffcccc"})
+        timeline.append({"Phase": "🩸 Bleed Days", "Start": bleed_start, "End": bleed_end, "Days": bleed})
         
         # Phase 2: Power Week
         pw_start = bleed_end + timedelta(days=1)
         pw_end = pw_start + timedelta(days=power_week_duration - 1)
-        timeline.append({"Phase": "⚡ Power Week", "Start": pw_start, "End": pw_end, "Days": power_week_duration, "Color": "#ffffcc"})
+        timeline.append({"Phase": "⚡ Power Week", "Start": pw_start, "End": pw_end, "Days": power_week_duration})
+
+        # Vacation Mode (Calculated for JSON and Summary)
+        vacation_start = bleed_end - timedelta(days=1)
+        vacation_end = pw_end
         
         # Phase 3: Crash 1
         c1_start = pw_end + timedelta(days=1)
         c1_end = c1_start + timedelta(days=self.CRASH_1 - 1)
-        timeline.append({"Phase": "📉 Crash #1", "Start": c1_start, "End": c1_end, "Days": self.CRASH_1, "Color": "#e6e6e6"})
+        timeline.append({"Phase": "📉 Crash #1", "Start": c1_start, "End": c1_end, "Days": self.CRASH_1})
         
         # Phase 4: Nurture
         nur_start = c1_end + timedelta(days=1)
         nur_end = nur_start + timedelta(days=self.NURTURE - 1)
-        timeline.append({"Phase": "🌱 Nurture", "Start": nur_start, "End": nur_end, "Days": self.NURTURE, "Color": "#ccffcc"})
+        timeline.append({"Phase": "🌱 Nurture", "Start": nur_start, "End": nur_end, "Days": self.NURTURE})
         
         # Phase 5: Crash 2
         c2_start = nur_end + timedelta(days=1)
         c2_end = c2_start + timedelta(days=self.CRASH_2 - 1)
-        timeline.append({"Phase": "📉 Crash #2", "Start": c2_start, "End": c2_end, "Days": self.CRASH_2, "Color": "#e6e6e6"})
+        timeline.append({"Phase": "📉 Crash #2", "Start": c2_start, "End": c2_end, "Days": self.CRASH_2})
 
-        # --- Fertile Window Calculation (HYBRID LOGIC) ---
-        
-        # 1. Calculate Main Ovulation Day
+        # --- Fertile Window Calculation ---
         main_ovulation_day_num = (bleed + power_week_duration) - 2
         main_date = start_date_obj + timedelta(days=main_ovulation_day_num - 1)
 
         final_baby_days = []
         logic_used = ""
 
-        # LOGIC CHECK:
-        # If Power Week is tight (5 days or less), make the WHOLE Power Week fertile.
         if power_week_duration <= 5:
             logic_used = "Power Week Rule (≤ 5 Days)"
             for i in range(power_week_duration):
@@ -150,8 +145,48 @@ class OvulationPredictor:
             raw_baby_days.append(main_date)
             raw_baby_days.append(main_date + timedelta(days=1))
             
-            # Filter out overlap with bleed
             final_baby_days = [d for d in raw_baby_days if d > bleed_end]
+
+        # --- CONSTRUCT JSON DATA ---
+        # Using exact calculated dates to ensure JSON matches the Logic
+        json_data = {
+            "bleed_week": {
+                "start": str(bleed_start),
+                "end": str(bleed_end),
+                "color": "0xFFE91E63",
+            },
+            "power_week": {
+                "start": str(pw_start),
+                "end": str(pw_end),
+                "color": "0xFF68D20D",
+            },
+            "vacation_mode": {
+                "start": str(vacation_start), 
+                "end": str(vacation_end),
+                "color": "0xFFFFFF00",
+            },
+            "main_ovulation_day": str(main_date),
+            "ovulation_days": {
+                "start": str(final_baby_days[0]) if final_baby_days else "",
+                "end": str(final_baby_days[-1]) if final_baby_days else "",
+                "color": "0xFFFFC0CB",
+            },
+            "crash_round_1": {
+                "start": str(c1_start),
+                "end": str(c1_end),
+                "color": "0xFFFFC107",
+            },
+            "nurture_week": {
+                "start": str(nur_start),
+                "end": str(nur_end),
+                "color": "0xFF8E8E8E",
+            },
+            "crash_round_2": {
+                "start": str(c2_start),
+                "end": str(c2_end),
+                "color": "0xFFFFC107",
+            }
+        }
 
         return {
             "rounded_bleed": bleed,
@@ -160,7 +195,9 @@ class OvulationPredictor:
             "main_date": main_date,
             "baby_days": final_baby_days,
             "timeline": timeline,
-            "logic_used": logic_used
+            "logic_used": logic_used,
+            "vacation_mode": {"start": vacation_start, "end": vacation_end},
+            "json_output": json_data
         }
 
 # ==========================================
@@ -225,8 +262,7 @@ if app_mode == "Algo #01: History Calculation":
                 res = algo1.process_history(st.session_state['history'])
                 st.success("### Final Averages")
                 m1, m2 = st.columns(2)
-                # Display logic name
-                m1.metric("Avg Bleed (Custom: .6 Up)", f"{res['bleed_avg']} Days")
+                m1.metric("Avg Bleed (Custom Rule)", f"{res['bleed_avg']} Days")
                 m2.metric("Avg Cycle (Round Up)", f"{res['cycle_avg']} Days")
             except Exception as e:
                 st.error(f"Error: {e}")
@@ -265,8 +301,24 @@ elif app_mode == "Algo #02: Future Prediction":
             # --- SECTION 2: FULL TIMELINE ---
             st.subheader("2. 📅 Full Cycle Timeline")
             
+            # Add Vacation Mode to display table (Optional, but good for visibility)
+            display_timeline = list(res['timeline'])
+            vacation_start = res['vacation_mode']['start']
+            vacation_end = res['vacation_mode']['end']
+            vacation_days = (vacation_end - vacation_start).days + 1
+            
+            # Insert Vacation Mode after Power Week for Table View
+            # Finding index of Power Week to insert after
+            pw_index = next((i for i, item in enumerate(display_timeline) if item["Phase"] == "⚡ Power Week"), 1)
+            display_timeline.insert(pw_index + 1, {
+                "Phase": "🏖️ Vacation Mode",
+                "Start": vacation_start,
+                "End": vacation_end,
+                "Days": vacation_days
+            })
+
             timeline_data = []
-            for item in res['timeline']:
+            for item in display_timeline:
                 timeline_data.append({
                     "Phase Name": item["Phase"],
                     "Start Date": item["Start"].strftime("%d %b %Y"),
@@ -279,19 +331,15 @@ elif app_mode == "Algo #02: Future Prediction":
 
             # --- SECTION 3: FERTILE WINDOW ---
             st.subheader("3. ❤️ Fertile Window (Baby Days)")
-            
-            # Display logic used
             st.caption(f"**Applied Logic:** {res['logic_used']}")
             
             if len(res['baby_days']) == 0:
                  st.warning("All calculated fertile days overlap with Bleed days.")
             else:
                 cols = st.columns(len(res['baby_days']))
-                
                 for i, day_obj in enumerate(res['baby_days']):
                     date_str = day_obj.strftime("%d %b")
                     is_main = (day_obj == res['main_date'])
-                    
                     if i < len(cols):
                         with cols[i]:
                             if is_main:
@@ -301,6 +349,20 @@ elif app_mode == "Algo #02: Future Prediction":
                 
                 if res['logic_used'].startswith("Standard"):
                     st.caption("Note: Any fertile days overlapping with Bleed days have been hidden.")
+
+            # --- SECTION 4: DOWNLOAD JSON ---
+            st.divider()
+            st.subheader("4. 📥 Download Data")
+            
+            # Convert Dict to JSON String
+            json_string = json.dumps(res['json_output'], indent=4)
+            
+            st.download_button(
+                label="Download JSON Calculation",
+                data=json_string,
+                file_name="cycle_calculation.json",
+                mime="application/json"
+            )
 
         except ValueError as e:
             st.error(f"❌ **VALIDATION FAILED:** {str(e)}")

@@ -4,6 +4,21 @@ import pandas as pd
 from datetime import datetime, timedelta, date
 
 # ==========================================
+# HELPER FUNCTION (CLIENT LOGIC)
+# ==========================================
+def apply_custom_rounding(value: float) -> int:
+    """
+    Client Requirement:
+    - Decimal <= 0.5 -> Round DOWN (Floor)
+    - Decimal >= 0.6 -> Round UP (Ceil)
+    """
+    decimal_part = value - math.floor(value)
+    if decimal_part >= 0.6:
+        return math.ceil(value)
+    else:
+        return math.floor(value)
+
+# ==========================================
 # CORE LOGIC CLASSES
 # ==========================================
 
@@ -30,17 +45,21 @@ class CycleHistoryCalculator:
                 gap = (history_data[i+1]['start'] - history_data[i]['start']).days
                 cycle_gaps.append(gap)
         
+        # --- BLEED AVERAGE (UPDATED TO CLIENT LOGIC) ---
         if len(bleed_durations) == 1:
             final_bleed_avg = bleed_durations[0]
         else:
             avg_raw = sum(bleed_durations) / len(bleed_durations)
-            final_bleed_avg = math.floor(avg_raw)
+            # Old: final_bleed_avg = math.floor(avg_raw)
+            # New: Custom Logic (0.6 up, 0.5 down)
+            final_bleed_avg = apply_custom_rounding(avg_raw)
 
+        # --- CYCLE AVERAGE (KEPT STRICT ROUND UP AS PER ORIGINAL REQ) ---
         if not cycle_gaps:
             final_cycle_avg = 28
         else:
             avg_cycle_raw = sum(cycle_gaps) / len(cycle_gaps)
-            final_cycle_avg = math.ceil(avg_cycle_raw)
+            final_cycle_avg = math.ceil(avg_cycle_raw) # Cycles always round up
 
         return {
             "bleed_avg": final_bleed_avg,
@@ -56,8 +75,12 @@ class OvulationPredictor:
         self.CRASH_2 = 3
 
     def predict(self, start_date_obj: date, raw_bleed: float, raw_cycle: float):
-        # 1. Rounding
-        bleed = math.floor(raw_bleed)
+        # 1. Rounding Inputs
+        
+        # Bleed: Apply Client Logic (e.g. 5.7 -> 6, 5.2 -> 5)
+        bleed = apply_custom_rounding(raw_bleed)
+        
+        # Cycle: Strict Round Up (e.g. 26.2 -> 27)
         cycle = math.ceil(raw_cycle)
 
         # 2. Basic Validation
@@ -106,7 +129,7 @@ class OvulationPredictor:
 
         # --- Fertile Window Calculation (HYBRID LOGIC) ---
         
-        # 1. Calculate Main Ovulation Day (Always needed for highlighting)
+        # 1. Calculate Main Ovulation Day
         main_ovulation_day_num = (bleed + power_week_duration) - 2
         main_date = start_date_obj + timedelta(days=main_ovulation_day_num - 1)
 
@@ -117,19 +140,17 @@ class OvulationPredictor:
         # If Power Week is tight (5 days or less), make the WHOLE Power Week fertile.
         if power_week_duration <= 5:
             logic_used = "Power Week Rule (≤ 5 Days)"
-            # Add every day of the Power Week
             for i in range(power_week_duration):
                 final_baby_days.append(pw_start + timedelta(days=i))
         else:
             logic_used = "Standard Rule (Main - 4 & + 1)"
-            # Use Standard Formula: Main - 4 to Main + 1
             raw_baby_days = []
             for i in range(4, 0, -1):
                 raw_baby_days.append(main_date - timedelta(days=i))
             raw_baby_days.append(main_date)
             raw_baby_days.append(main_date + timedelta(days=1))
             
-            # Filter out overlap with bleed (only for Standard Rule)
+            # Filter out overlap with bleed
             final_baby_days = [d for d in raw_baby_days if d > bleed_end]
 
         return {
@@ -204,7 +225,8 @@ if app_mode == "Algo #01: History Calculation":
                 res = algo1.process_history(st.session_state['history'])
                 st.success("### Final Averages")
                 m1, m2 = st.columns(2)
-                m1.metric("Avg Bleed (Round Down)", f"{res['bleed_avg']} Days")
+                # Display logic name
+                m1.metric("Avg Bleed (Custom: .6 Up)", f"{res['bleed_avg']} Days")
                 m2.metric("Avg Cycle (Round Up)", f"{res['cycle_avg']} Days")
             except Exception as e:
                 st.error(f"Error: {e}")
@@ -222,9 +244,10 @@ elif app_mode == "Algo #02: Future Prediction":
     with c1:
         p_start = st.date_input("Cycle Start Date (Day 1)", value=date(2026, 1, 1))
     with c2:
-        p_bleed = st.number_input("Bleed Duration", min_value=0.0, max_value=15.0, value=5.0, step=0.1)
+        # Step=0.1 to test decimal inputs like 5.75
+        p_bleed = st.number_input("Bleed Duration (Avg)", min_value=0.0, max_value=15.0, value=5.7, step=0.1)
     with c3:
-        p_cycle = st.number_input("Cycle Duration", min_value=0.0, max_value=50.0, value=21.0, step=0.1)
+        p_cycle = st.number_input("Cycle Duration (Avg)", min_value=0.0, max_value=50.0, value=28.0, step=0.1)
 
     if st.button("Generate Cycle Roadmap", type="primary"):
         algo2 = OvulationPredictor()
@@ -257,7 +280,7 @@ elif app_mode == "Algo #02: Future Prediction":
             # --- SECTION 3: FERTILE WINDOW ---
             st.subheader("3. ❤️ Fertile Window (Baby Days)")
             
-            # Display logic used for clarity
+            # Display logic used
             st.caption(f"**Applied Logic:** {res['logic_used']}")
             
             if len(res['baby_days']) == 0:
